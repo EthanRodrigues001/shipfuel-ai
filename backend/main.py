@@ -4,12 +4,16 @@ Deploy on Railway. All models pre-loaded at startup.
 """
 
 import os
+import warnings
 import joblib
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+# Suppress version-mismatch warnings from loading pickled models
+warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────
 # App setup
