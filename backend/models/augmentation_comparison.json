@@ -1,0 +1,29 @@
+{
+  "description": "Effect of synthetic data augmentation on model accuracy. Models tested on real-only test set (16,114 rows).",
+  "splits": {
+    "real_only_train": 64453,
+    "augmented_train": 76453,
+    "synthetic_added": 12000,
+    "test_set": 16114
+  },
+  "comparison": {
+    "linear_regression": {
+      "real_only": { "r2": 0.970641, "mae": 21.08, "rmse": 35.53, "mape": 2.61 },
+      "augmented": { "r2": 0.966919, "mae": 23.40, "rmse": 37.72, "mape": 2.87 },
+      "r2_change": -0.003722,
+      "mae_change": 2.32
+    },
+    "random_forest": {
+      "real_only": { "r2": 0.982699, "mae": 17.48, "rmse": 27.28, "mape": 2.08 },
+      "augmented": { "r2": 0.981855, "mae": 17.82, "rmse": 27.94, "mape": 2.12 },
+      "r2_change": -0.000844,
+      "mae_change": 0.34
+    },
+    "xgboost": {
+      "real_only": { "r2": 0.983121, "mae": 17.51, "rmse": 26.94, "mape": 2.13 },
+      "augmented": { "r2": 0.982190, "mae": 17.70, "rmse": 27.68, "mape": 2.12 },
+      "r2_change": -0.000931,
+      "mae_change": 0.19
+    }
+  }
+}

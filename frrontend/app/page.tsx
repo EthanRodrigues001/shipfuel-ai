@@ -29,11 +29,18 @@ interface PredictResponse {
   unit: string;
 }
 
+interface OverfitAnalysis {
+  train_test_r2_gap: number;
+  is_overfit: boolean;
+  explanation: string;
+}
+
 interface ModelMetrics {
   train: { r2: number; mae: number; rmse: number; mape: number };
   test: { r2: number; mae: number; rmse: number; mape: number };
   cv_r2_mean: number;
   cv_r2_std: number;
+  overfit_analysis?: OverfitAnalysis;
 }
 
 interface MetricsResponse {
@@ -54,6 +61,35 @@ interface DatasetStats {
   real_rows: number;
   synthetic_rows: number;
   target: { mean: number; std: number; min: number; max: number };
+}
+
+interface AugModelMetrics {
+  r2: number;
+  mae: number;
+  rmse: number;
+  mape: number;
+}
+
+interface AugModelComparison {
+  real_only: AugModelMetrics;
+  augmented: AugModelMetrics;
+  r2_change: number;
+  mae_change: number;
+}
+
+interface AugmentationData {
+  description: string;
+  splits: {
+    real_only_train: number;
+    augmented_train: number;
+    synthetic_added: number;
+    test_set: number;
+  };
+  comparison: {
+    linear_regression: AugModelComparison;
+    random_forest: AugModelComparison;
+    xgboost: AugModelComparison;
+  };
 }
 
 // ─── Short display names for features ─────────────────────────────────────────
@@ -127,6 +163,7 @@ export default function Home() {
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
   const [featureImportance, setFeatureImportance] = useState<FeatureImportance[]>([]);
   const [stats, setStats] = useState<DatasetStats | null>(null);
+  const [augData, setAugData] = useState<AugmentationData | null>(null);
   const [activeTab, setActiveTab] = useState<"rf" | "xgb" | "lr">("xgb");
 
   // Fetch static data on mount
@@ -134,6 +171,7 @@ export default function Home() {
     fetch(`${API_URL}/metrics`).then((r) => r.json()).then(setMetrics).catch(() => {});
     fetch(`${API_URL}/feature-importance`).then((r) => r.json()).then(setFeatureImportance).catch(() => {});
     fetch(`${API_URL}/stats`).then((r) => r.json()).then(setStats).catch(() => {});
+    fetch(`${API_URL}/augmentation-comparison`).then((r) => r.json()).then(setAugData).catch(() => {});
   }, []);
 
   const handlePredict = useCallback(async () => {
@@ -410,9 +448,18 @@ export default function Home() {
                       <span className="font-mono">{d.cv_r2_mean.toFixed(4)} ±{d.cv_r2_std.toFixed(4)}</span>
                     </div>
                   </div>
-                  <p className="text-xs text-emerald-400">
-                    ✅ No overfitting — train/test gap &lt; 0.005
-                  </p>
+                  {d.overfit_analysis ? (
+                    <p className={`text-xs ${d.overfit_analysis.is_overfit ? 'text-amber-400' : 'text-emerald-400'}`}>
+                      {d.overfit_analysis.is_overfit ? '⚠️' : '✅'}{' '}
+                      {d.overfit_analysis.is_overfit ? 'Potential overfitting' : 'No overfitting'} — train/test R² gap: {d.overfit_analysis.train_test_r2_gap.toFixed(4)}
+                    </p>
+                  ) : (
+                    <p className={`text-xs ${
+                      (d.train.r2 - d.test.r2) > 0.02 ? 'text-amber-400' : 'text-emerald-400'
+                    }`}>
+                      {(d.train.r2 - d.test.r2) > 0.02 ? '⚠️ Potential overfitting' : '✅ No overfitting'} — train/test gap: {(d.train.r2 - d.test.r2).toFixed(4)}
+                    </p>
+                  )}
                 </div>
               );
             })()}
@@ -502,6 +549,88 @@ export default function Home() {
                 <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8 }} />
               </RadarChart>
             </ResponsiveContainer>
+          </div>
+        )}
+
+        {/* ── Augmentation Effect ── */}
+        {augData && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+            <SectionTitle>🧪 Effect of Synthetic Data Augmentation</SectionTitle>
+            <p className="text-sm text-slate-400 mb-2">
+              Does adding synthetic data improve predictions? We trained each model twice —
+              once on <span className="text-emerald-400 font-medium">real data only</span> ({augData.splits.real_only_train.toLocaleString()} rows)
+              and once on <span className="text-amber-400 font-medium">real + synthetic</span> ({augData.splits.augmented_train.toLocaleString()} rows) —
+              then tested on a held-out <span className="text-sky-400 font-medium">real-only test set</span> ({augData.splits.test_set.toLocaleString()} rows).
+            </p>
+            <p className="text-xs text-red-400/80 mb-5">
+              ⚠️ Augmentation reduced accuracy for all models — synthetic data introduces distribution mismatch.
+            </p>
+
+            {/* R² comparison chart */}
+            <p className="text-sm text-slate-400 mb-3">R² Score — Real-Only vs Augmented Training</p>
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart
+                data={[
+                  {
+                    model: "Linear Reg",
+                    "Real Only": +(augData.comparison.linear_regression.real_only.r2 * 100).toFixed(2),
+                    "With Synthetic": +(augData.comparison.linear_regression.augmented.r2 * 100).toFixed(2),
+                  },
+                  {
+                    model: "Random Forest",
+                    "Real Only": +(augData.comparison.random_forest.real_only.r2 * 100).toFixed(2),
+                    "With Synthetic": +(augData.comparison.random_forest.augmented.r2 * 100).toFixed(2),
+                  },
+                  {
+                    model: "XGBoost",
+                    "Real Only": +(augData.comparison.xgboost.real_only.r2 * 100).toFixed(2),
+                    "With Synthetic": +(augData.comparison.xgboost.augmented.r2 * 100).toFixed(2),
+                  },
+                ]}
+                margin={{ top: 4, right: 20, left: 10, bottom: 4 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                <XAxis dataKey="model" tick={{ fill: "#94a3b8", fontSize: 12 }} />
+                <YAxis domain={[96, 99]} tickFormatter={(v) => `${v}%`} tick={{ fill: "#94a3b8", fontSize: 12 }} />
+                <Tooltip
+                  contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8 }}
+                  formatter={(v) => [`${v}%`]}
+                />
+                <Legend wrapperStyle={{ color: "#94a3b8", fontSize: 12 }} />
+                <Bar dataKey="Real Only" fill="#34d399" radius={[4,4,0,0]} />
+                <Bar dataKey="With Synthetic" fill="#f87171" radius={[4,4,0,0]} />
+              </BarChart>
+            </ResponsiveContainer>
+
+            {/* Detail cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-5">
+              {(["linear_regression", "random_forest", "xgboost"] as const).map((m) => {
+                const d = augData.comparison[m];
+                return (
+                  <div key={m} className={`border rounded-xl p-4 space-y-2 ${modelBg[m]}`}>
+                    <p className={`text-xs font-semibold ${modelColors[m]}`}>{modelLabels[m]}</p>
+                    <div className="space-y-1 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">R² (real only)</span>
+                        <span className="font-mono text-emerald-400">{d.real_only.r2.toFixed(4)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">R² (augmented)</span>
+                        <span className="font-mono text-red-400">{d.augmented.r2.toFixed(4)}</span>
+                      </div>
+                      <div className="flex justify-between border-t border-slate-700 pt-1">
+                        <span className="text-slate-400">R² change</span>
+                        <span className="font-mono text-red-400">{d.r2_change > 0 ? "+" : ""}{(d.r2_change * 100).toFixed(2)}%</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">MAE change</span>
+                        <span className="font-mono text-red-400">+{d.mae_change.toFixed(2)} L/hr</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 

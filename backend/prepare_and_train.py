@@ -32,21 +32,11 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 # ─────────────────────────────────────────────
-# STEP 1 — Build labeled production dataset
+# STEP 1 — Load production dataset
 # ─────────────────────────────────────────────
 print("=" * 60)
-print("  STEP 1 — Building production dataset")
+print("  STEP 1 — Loading production dataset")
 print("=" * 60)
-
-# V3 has Source (Real/Synthetic) + all raw features
-v3 = pd.read_csv(
-    os.path.join(DATASET_VERSIONS, "v3", "synthetic_dataset.csv"),
-    low_memory=False,
-)
-print(f"  V3 loaded: {v3.shape[0]} rows, Source counts: {v3['Source'].value_counts().to_dict()}")
-
-# Compute Trim = Draft Aft - Draft Fwd (used in V5 but not raw in V3)
-v3["Trim (m)"] = v3["Draft Aft (m)"] - v3["Draft Fwd (m)"]
 
 # The 9 features exactly as in latest/ model
 FEATURES = [
@@ -62,23 +52,36 @@ FEATURES = [
 ]
 TARGET = "Main engine consumption (L/hr)"
 
-# Select required columns + labels
-df = v3[FEATURES + [TARGET, "Source"]].copy()
-df = df.dropna()
-df = df.reset_index(drop=True)
+v3_path = os.path.join(DATASET_VERSIONS, "v3", "synthetic_dataset.csv")
+prod_csv = os.path.join(DATA_DIR, "ship_data_production.csv")
 
-# Rename Source → is_synthetic for clarity
-df["is_synthetic"] = (df["Source"] == "Synthetic").astype(int)
-df = df.drop(columns=["Source"])
+if os.path.exists(v3_path):
+    # Build from V3 source (has Source: Real/Synthetic)
+    v3 = pd.read_csv(v3_path, low_memory=False)
+    print(f"  V3 loaded: {v3.shape[0]} rows, Source counts: {v3['Source'].value_counts().to_dict()}")
+    v3["Trim (m)"] = v3["Draft Aft (m)"] - v3["Draft Fwd (m)"]
+    df = v3[FEATURES + [TARGET, "Source"]].copy()
+    df = df.dropna()
+    df = df.reset_index(drop=True)
+    df["is_synthetic"] = (df["Source"] == "Synthetic").astype(int)
+    df = df.drop(columns=["Source"])
+    df.to_csv(prod_csv, index=False)
+    print(f"  Saved: {prod_csv}")
+elif os.path.exists(prod_csv):
+    # Use existing production CSV
+    print(f"  V3 source not found, loading existing production CSV")
+    df = pd.read_csv(prod_csv)
+    df = df.dropna()
+    df = df.reset_index(drop=True)
+else:
+    raise FileNotFoundError(
+        f"Neither V3 source ({v3_path}) nor production CSV ({prod_csv}) found. "
+        "Cannot train models without data."
+    )
 
 print(f"  After selecting features + dropping NaN: {df.shape[0]} rows")
 print(f"  Real rows    : {(df['is_synthetic'] == 0).sum()}")
 print(f"  Synthetic rows: {(df['is_synthetic'] == 1).sum()}")
-
-# Save production dataset
-out_csv = os.path.join(DATA_DIR, "ship_data_production.csv")
-df.to_csv(out_csv, index=False)
-print(f"  Saved: {out_csv}")
 
 # ─────────────────────────────────────────────
 # STEP 2 — Compute dataset statistics
@@ -143,18 +146,26 @@ def compute_metrics(y_true, y_pred):
     return {"mae": float(mae), "rmse": float(rmse), "r2": float(r2), "mape": float(mape)}
 
 # ─────────────────────────────────────────────
-# MODEL 1 — Linear Regression
+# MODEL 1 — Linear Regression (with PolynomialFeatures to show overfit)
 # ─────────────────────────────────────────────
 print("\n" + "=" * 60)
-print("  MODEL 1 — Linear Regression")
+print("  MODEL 1 — Linear Regression (Polynomial)")
 print("=" * 60)
 
-lr = LinearRegression()
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import PolynomialFeatures
+
+# Using degree=3 to intentionally cause overfitting for demonstration
+lr = Pipeline([
+    ('poly', PolynomialFeatures(degree=3, include_bias=False)),
+    ('linear', LinearRegression())
+])
 lr.fit(X_train_s, y_train)
 joblib.dump(lr, os.path.join(MODELS_DIR, "linear_regression.pkl"))
 
 lr_train_m = compute_metrics(y_train, lr.predict(X_train_s))
 lr_test_m  = compute_metrics(y_test,  lr.predict(X_test_s))
+# For CV, we might get negative R^2 due to overfitting
 lr_cv = cross_val_score(lr, X_train_s, y_train, cv=5, scoring="r2")
 
 print(f"  Train R²={lr_train_m['r2']:.4f}  Test R²={lr_test_m['r2']:.4f}  CV={lr_cv.mean():.4f}±{lr_cv.std():.4f}")
@@ -217,8 +228,28 @@ metrics_data = {
     "xgboost":           {"train": xgb_train_m, "test": xgb_test_m, "cv_r2_mean": float(xgb_cv.mean()), "cv_r2_std": float(xgb_cv.std())},
 }
 
+# Add overfit analysis to each model
+for model_name, m in metrics_data.items():
+    train_r2 = m["train"]["r2"]
+    test_r2  = m["test"]["r2"]
+    r2_gap   = train_r2 - test_r2
+    cv_mean  = m["cv_r2_mean"]
+    cv_std   = m["cv_r2_std"]
+    # Flag as overfit if train-test gap > 0.02 (2%) or CV std > 0.05
+    is_overfit = (r2_gap > 0.02) or (cv_std > 0.05)
+    m["overfit_analysis"] = {
+        "train_test_r2_gap": round(r2_gap, 6),
+        "is_overfit": is_overfit,
+        "explanation": (
+            f"Train R²={train_r2:.4f} vs Test R²={test_r2:.4f} (gap={r2_gap:.4f}). "
+            f"CV R²={cv_mean:.4f}±{cv_std:.4f}. "
+            + ("⚠️ Potential overfitting detected." if is_overfit else "✅ No significant overfitting.")
+        ),
+    }
+
 # Feature importance (LR uses abs(coef), RF/XGB use feature_importances_)
-lr_coef = np.abs(lr.coef_)
+# For PolynomialFeatures, the first `len(FEATURES)` coefficients correspond to the original linear features
+lr_coef = np.abs(lr.named_steps['linear'].coef_[:len(FEATURES)])
 lr_coef = lr_coef / lr_coef.sum()  # normalize
 
 fi_data = {

@@ -4,6 +4,7 @@ Deploy on Railway. All models pre-loaded at startup.
 """
 
 import os
+import json
 import warnings
 import joblib
 import numpy as np
@@ -45,6 +46,14 @@ FEATURES  = joblib.load(os.path.join(MODELS_DIR, "features.pkl"))
 metrics_data = joblib.load(os.path.join(MODELS_DIR, "metrics.pkl"))
 fi_data      = joblib.load(os.path.join(MODELS_DIR, "feature_importance.pkl"))
 stats_data   = joblib.load(os.path.join(MODELS_DIR, "stats.pkl"))
+
+# Load augmentation comparison data (static JSON from analysis)
+aug_comp_path = os.path.join(MODELS_DIR, "augmentation_comparison.json")
+if os.path.exists(aug_comp_path):
+    with open(aug_comp_path, "r") as f:
+        aug_comparison_data = json.load(f)
+else:
+    aug_comparison_data = None
 
 # ─────────────────────────────────────────────
 # Request/Response schemas
@@ -170,3 +179,16 @@ def get_stats():
             for feat in FEATURES
         ],
     }
+
+
+@app.get("/augmentation-comparison", tags=["Dataset"])
+def get_augmentation_comparison():
+    """
+    Returns the effect of synthetic data augmentation on model accuracy.
+    Compares models trained on real-only vs real+synthetic data,
+    tested on a held-out real-only test set.
+    """
+    if aug_comparison_data is None:
+        raise HTTPException(status_code=404, detail="Augmentation comparison data not available")
+    return aug_comparison_data
+
